@@ -42,9 +42,15 @@ namespace larcv {
   void Diffusion3D::configure(const PSet& cfg)
   {
     configure_labels(cfg);
-    auto sigma_v = cfg.get<std::vector<double> >("SigmaXYZ");
+    auto sigma_v = cfg.get<std::vector<double> >("SigmaXYZ");  
     _numvox_v  = cfg.get<std::vector<size_t> >("NumVoxelsXYZ");
     _normalize = cfg.get<bool>("Normalize", true);
+          
+    // Load diffusion parameters from config.
+    //auto Dlong = cfg.get<double>("DiffLong"); // 7.2 cm^2/s  for E = 500V/cm
+    //auto Dtran = cfg.get<double>("DiffTran"); // 12  cm^2/s  for E = 500V/cm
+    //auto vdrift = cfg.get<double>("DriftVelocity"); // 0.1113 cm/us (SimIonization)
+      
     if (sigma_v.size() != 3) {
       LARCV_CRITICAL() << "SigmaXYZ parameter must be length 3 floating point vector!" << std::endl;
       throw larbys();
@@ -54,18 +60,18 @@ namespace larcv {
       throw larbys();
     }
 
-    // precalculate sigma ** 2
+    // Precalculate sigma ** 2
     std::transform(sigma_v.cbegin(), sigma_v.cend(), std::back_inserter(_sigma2_v),
                    [](double v) { return v * v; });
 
-    // create smearing matrix
+    // Create smearing matrix
     _scale_vvv.resize(_numvox_v[0] + 1);
     for (auto& scale_vv : _scale_vvv) {
       scale_vv.resize(_numvox_v[1] + 1);
       for (auto& scale_v : scale_vv) {
         scale_v.resize(_numvox_v[2] + 1, 0.);
       }
-    }
+    } 
   }
 
   void Diffusion3D::initialize()
@@ -95,39 +101,47 @@ namespace larcv {
           one_time_warning = false;
         }
       }
+        
+//       // ev_cluster3d is EventClusterVoxel3D, see Voxel3DMeta.h  for contents of meta.
+       auto const& meta = ev_cluster3d.meta();
+    
+//       // For this ev_cluster3d, get varL and varT
+//       auto xpos = meta.pos_x() // x-axis is drift direction
+//       auto t = xpos/_vdrift    // drift time in microseconds
+//       auto varL = 2 * _d_l * t // longitudinal spatial diffusion variance
+//       auto varT = 2 * _d_t * t // transverse spatial diffusion variance
+        
+//       for (size_t xshift = 0; xshift <= _numvox_v[0]; ++xshift) {
+//         for (size_t yshift = 0; yshift <= _numvox_v[1]; ++yshift) {
+//           for (size_t zshift = 0; zshift <= _numvox_v[2]; ++zshift) {
 
-      auto const& meta = ev_cluster3d.meta();
-      for (size_t xshift = 0; xshift <= _numvox_v[0]; ++xshift) {
-        for (size_t yshift = 0; yshift <= _numvox_v[1]; ++yshift) {
-          for (size_t zshift = 0; zshift <= _numvox_v[2]; ++zshift) {
+//             double val = exp( - pow(xshift * meta.size_voxel_x(), 2) / (2. * varL)
+//               - pow(yshift * meta.size_voxel_y(), 2) / (2. * varT)
+//               - pow(zshift * meta.size_voxel_z(), 2) / (2. * varT) );
+//             _scale_vvv[xshift][yshift][zshift] = val;
+//           }
+//         }
+//       }
 
-            double val = exp( - pow(xshift * meta.size_voxel_x(), 2) / (2. * _sigma2_v[0])
-              - pow(yshift * meta.size_voxel_y(), 2) / (2. * _sigma2_v[1])
-              - pow(zshift * meta.size_voxel_z(), 2) / (2. * _sigma2_v[2]) );
-            _scale_vvv[xshift][yshift][zshift] = val;
-          }
-        }
-      }
+//       double scale_sum = 1.;
+//       if(_normalize) {
+//        scale_sum = 0.;
+//        int x_ctr = -((int)_numvox_v[0]);
+//        while(x_ctr <= (int)(_numvox_v[0])) {
+//          int y_ctr = -((int)_numvox_v[1]);
+//          while(y_ctr <= (int)(_numvox_v[1])) {
+//            int z_ctr = -((int)_numvox_v[2]);
+//            while(z_ctr <= (int)(_numvox_v[2])) {
+//              scale_sum += _scale_vvv[std::abs(x_ctr)][std::abs(y_ctr)][std::abs(z_ctr)];
+//              ++z_ctr;
+//            }
+//            ++y_ctr;
+//          }
+//          ++x_ctr;
+//        }
+//      }
 
-      double scale_sum = 1.;
-      if(_normalize) {
-       scale_sum = 0.;
-       int x_ctr = -((int)_numvox_v[0]);
-       while(x_ctr <= (int)(_numvox_v[0])) {
-         int y_ctr = -((int)_numvox_v[1]);
-         while(y_ctr <= (int)(_numvox_v[1])) {
-           int z_ctr = -((int)_numvox_v[2]);
-           while(z_ctr <= (int)(_numvox_v[2])) {
-             scale_sum += _scale_vvv[std::abs(x_ctr)][std::abs(y_ctr)][std::abs(z_ctr)];
-             ++z_ctr;
-           }
-           ++y_ctr;
-         }
-         ++x_ctr;
-       }
-     }
-
-     LARCV_INFO() << "scale_sum: " << scale_sum << std::endl;
+     // LARCV_INFO() << "scale_sum: " << scale_sum << std::endl;
 
      ev_output->meta(meta);
      std::vector<larcv::VoxelSet> vsa_output;
@@ -142,6 +156,62 @@ namespace larcv {
          double xpos = pos.x - _numvox_v[0] * meta.size_voxel_x();
          double xmax = pos.x + (_numvox_v[0] + 0.5) * meta.size_voxel_x();
          int x_ctr = 0;
+           
+         // ======== BEGIN: Diffusion Matrix ========
+         // For each voxel, create the smearing matrix:
+         // For this voxel, get varL and varT
+         
+         // FIX [hardcode]
+         double DriftVelocity = 0.1113; // cm/us ... 0.16
+         double DiffLong = 0.0000072;   // cm^2/us  for E = 500V/cm
+         double DiffTran = 0.000012;  // cm^2/us  for E = 500V/cm
+           
+         auto true_x = pos.x; // x-axis is drift direction
+           
+         // If default, subtract from bounding box
+         auto x_rel_anode = true_x - meta.x_org(vox.id());
+             
+         auto time = std::abs(x_rel_anode)/DriftVelocity;    // drift time in microseconds
+         auto varL = 2. * DiffLong * time; // longitudinal spatial diffusion variance
+         auto varT = 2. * DiffTran * time; // transverse spatial diffusion variance
+           
+         //LARCV_INFO() << "true_x = " << true_x << "; varL = " << varL << "; varT = " << varT << "; org_x = " << meta.x_org(vox.id()) << "; x_rel_anode = " << x_rel_anode << std::endl;
+         LARCV_INFO() << varL; 
+        
+         // Constructing matrix
+         for (size_t xshift = 0; xshift <= _numvox_v[0]; ++xshift) {
+            for (size_t yshift = 0; yshift <= _numvox_v[1]; ++yshift) {
+              for (size_t zshift = 0; zshift <= _numvox_v[2]; ++zshift) {
+                  
+                double val = exp( - pow(xshift * meta.size_voxel_x(), 2) / (2. * varL)
+                  - pow(yshift * meta.size_voxel_y(), 2) / (2. * varT)
+                  - pow(zshift * meta.size_voxel_z(), 2) / (2. * varT) );
+                _scale_vvv[xshift][yshift][zshift] = val;
+              
+              }
+            }
+         }
+         
+         // Normalization (for charge)
+         double scale_sum = 1.0;
+         if(_normalize) {
+           scale_sum = 0.;
+           int x_ctr = -((int)_numvox_v[0]);
+           while(x_ctr <= (int)(_numvox_v[0])) {
+             int y_ctr = -((int)_numvox_v[1]);
+             while(y_ctr <= (int)(_numvox_v[1])) {
+               int z_ctr = -((int)_numvox_v[2]);
+               while(z_ctr <= (int)(_numvox_v[2])) {
+                 scale_sum += _scale_vvv[std::abs(x_ctr)][std::abs(y_ctr)][std::abs(z_ctr)];
+                 ++z_ctr;
+               }
+               ++y_ctr;
+             }
+             ++x_ctr;
+           }
+         }
+         // ======== END: Diffusion Matrix ========
+          
          while (xpos < xmax) {
            double ypos = pos.y - _numvox_v[1] * meta.size_voxel_y();
            double ymax = pos.y + (_numvox_v[1] + 0.5) * meta.size_voxel_y();
@@ -195,6 +265,7 @@ namespace larcv {
    }
    ((VoxelSetArray*)(ev_output))->emplace(std::move(vsa_output));
  }
+ LARCV_INFO() << "DONE" << std::endl;
  return true;
  
 }
