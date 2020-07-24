@@ -47,9 +47,23 @@ namespace larcv {
     _normalize = cfg.get<bool>("Normalize", true);
           
     // Load diffusion parameters from config.
-    //auto Dlong = cfg.get<double>("DiffLong"); // 7.2 cm^2/s  for E = 500V/cm
-    //auto Dtran = cfg.get<double>("DiffTran"); // 12  cm^2/s  for E = 500V/cm
-    //auto vdrift = cfg.get<double>("DriftVelocity"); // 0.1113 cm/us (SimIonization)
+    LARCV_INFO() << "Loading diffusion parameters..." << std::endl;
+    _difflong = cfg.get<float>("DiffLong"); // 7.2 cm^2/s  for E = 500V/cm
+    _difftran = cfg.get<float>("DiffTran"); // 12  cm^2/s  for E = 500V/cm
+    _driftvelocity = cfg.get<float>("DriftVelocity"); // 0.1113 cm/us 
+    _anodeposition = cfg.get<float>("AnodePosition", _anodedefault); // cm
+    LARCV_INFO() << "D_L = " << _difflong << " cm^2/us" << std::endl;
+    LARCV_INFO() << "D_T = " << _difftran << " cm^2/us" << std::endl;
+    LARCV_INFO() << "v_drift = " << _driftvelocity << " cm/us" << std::endl;
+    if(_anodeposition == _anodedefault)
+    {
+       LARCV_INFO() << "anode_pos = [image-specific bounding box]" << std::endl;; 
+    } else {
+       LARCV_INFO() << "anode_pos = " << _anodeposition << " cm" << std::endl;;
+    }
+    LARCV_INFO() << "Division Threshold no. of e- = " << _threshold << std::endl;
+    LARCV_INFO() << "Diffusion parameters loaded." << std::endl;
+    
       
     if (sigma_v.size() != 3) {
       LARCV_CRITICAL() << "SigmaXYZ parameter must be length 3 floating point vector!" << std::endl;
@@ -102,46 +116,8 @@ namespace larcv {
         }
       }
         
-//       // ev_cluster3d is EventClusterVoxel3D, see Voxel3DMeta.h  for contents of meta.
-       auto const& meta = ev_cluster3d.meta();
-    
-//       // For this ev_cluster3d, get varL and varT
-//       auto xpos = meta.pos_x() // x-axis is drift direction
-//       auto t = xpos/_vdrift    // drift time in microseconds
-//       auto varL = 2 * _d_l * t // longitudinal spatial diffusion variance
-//       auto varT = 2 * _d_t * t // transverse spatial diffusion variance
-        
-//       for (size_t xshift = 0; xshift <= _numvox_v[0]; ++xshift) {
-//         for (size_t yshift = 0; yshift <= _numvox_v[1]; ++yshift) {
-//           for (size_t zshift = 0; zshift <= _numvox_v[2]; ++zshift) {
-
-//             double val = exp( - pow(xshift * meta.size_voxel_x(), 2) / (2. * varL)
-//               - pow(yshift * meta.size_voxel_y(), 2) / (2. * varT)
-//               - pow(zshift * meta.size_voxel_z(), 2) / (2. * varT) );
-//             _scale_vvv[xshift][yshift][zshift] = val;
-//           }
-//         }
-//       }
-
-//       double scale_sum = 1.;
-//       if(_normalize) {
-//        scale_sum = 0.;
-//        int x_ctr = -((int)_numvox_v[0]);
-//        while(x_ctr <= (int)(_numvox_v[0])) {
-//          int y_ctr = -((int)_numvox_v[1]);
-//          while(y_ctr <= (int)(_numvox_v[1])) {
-//            int z_ctr = -((int)_numvox_v[2]);
-//            while(z_ctr <= (int)(_numvox_v[2])) {
-//              scale_sum += _scale_vvv[std::abs(x_ctr)][std::abs(y_ctr)][std::abs(z_ctr)];
-//              ++z_ctr;
-//            }
-//            ++y_ctr;
-//          }
-//          ++x_ctr;
-//        }
-//      }
-
-     // LARCV_INFO() << "scale_sum: " << scale_sum << std::endl;
+     //  ev_cluster3d is EventClusterVoxel3D, see Voxel3DMeta.h  for contents of meta.
+     auto const& meta = ev_cluster3d.meta();
 
      ev_output->meta(meta);
      std::vector<larcv::VoxelSet> vsa_output;
@@ -160,23 +136,16 @@ namespace larcv {
          // ======== BEGIN: Diffusion Matrix ========
          // For each voxel, create the smearing matrix:
          // For this voxel, get varL and varT
-         
-         // FIX [hardcode]
-         double DriftVelocity = 0.1113; // cm/us ... 0.16
-         double DiffLong = 0.0000072;   // cm^2/us  for E = 500V/cm
-         double DiffTran = 0.000012;  // cm^2/us  for E = 500V/cm
-           
          auto true_x = pos.x; // x-axis is drift direction
            
          // If default, subtract from bounding box
-         auto x_rel_anode = true_x - meta.x_org(vox.id());
-             
-         auto time = std::abs(x_rel_anode)/DriftVelocity;    // drift time in microseconds
-         auto varL = 2. * DiffLong * time; // longitudinal spatial diffusion variance
-         auto varT = 2. * DiffTran * time; // transverse spatial diffusion variance
+         auto x_rel_anode = (_anodeposition == _anodedefault) ? (true_x - meta.x_org(vox.id())) : (true_x - _anodeposition);
+         auto time = std::abs(x_rel_anode)/_driftvelocity;    // drift time in microseconds
+         auto varL = 2. * _difflong * time; // longitudinal spatial diffusion variance
+         auto varT = 2. * _difftran * time; // transverse spatial diffusion variance
            
          //LARCV_INFO() << "true_x = " << true_x << "; varL = " << varL << "; varT = " << varT << "; org_x = " << meta.x_org(vox.id()) << "; x_rel_anode = " << x_rel_anode << std::endl;
-         LARCV_INFO() << varL; 
+         //LARCV_INFO() << varL; 
         
          // Constructing matrix
          for (size_t xshift = 0; xshift <= _numvox_v[0]; ++xshift) {
@@ -256,16 +225,15 @@ namespace larcv {
        res_data_threshold.emplace(vox.id(), vox.value(), true);
      }
 
-     LARCV_INFO() << "Before: vox count = " << cluster.as_vector().size() << " charge = " << cluster.sum()
-     << " ... "
-     << res_data.sum() << " ... " 
-     << "After: vox count = " << res_data_threshold.as_vector().size() << " charge = " << res_data_threshold.sum() << std::endl;
+     //LARCV_INFO() << "Before: vox count = " << cluster.as_vector().size() << " charge = " << cluster.sum()
+     //<< " ... "
+     //<< res_data.sum() << " ... " 
+     //<< "After: vox count = " << res_data_threshold.as_vector().size() << " charge = " << res_data_threshold.sum() << std::endl;
      
      vsa_output.emplace_back(std::move(res_data));
    }
    ((VoxelSetArray*)(ev_output))->emplace(std::move(vsa_output));
  }
- LARCV_INFO() << "DONE" << std::endl;
  return true;
  
 }
